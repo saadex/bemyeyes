@@ -1,6 +1,7 @@
 // src/screens/main/NavigationScreen.js
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+    InteractionManager,
     ScrollView,
     StyleSheet,
     Text,
@@ -15,7 +16,10 @@ import { useTheme } from '../contexts/ThemeContext';
 import { useNavigationControl } from '../contexts/NavigationControlContext';
 import { useArduino } from '../contexts/ArduinoContext';
 import { useAuth } from '../contexts/AuthContext';
-import { detectFromBase64, preloadObstacleModel } from '../utils/navigationObstacleAlert';
+import {
+  detectFromBase64,
+  preloadObstacleModel,
+} from '../utils/navigationObstacleAlert';
 import { sendEmergencyAlert } from '../utils/emergencyAlert';
 import {
   speak as speechSpeak,
@@ -148,38 +152,56 @@ export default function NavigationScreen({ route }) {
     }
   }, [route?.params]);
 
-  const runObstacleCheck = useCallback(async () => {
+  // The detection pipeline is launched as a fire-and-forget background task.
+  // The function itself awaits a yield up front (InteractionManager) so it
+  // never starts while an active gesture / animation is in flight; each stage
+  // inside `detectFromBase64` then yields to let timers, navigation guidance,
+  // and other interactions interleave with the heavy work.
+  const runObstacleCheck = useCallback(() => {
     if (obstacleCheckInProgressRef.current) return;
     obstacleCheckInProgressRef.current = true;
-    try {
-      let labels = [];
-      const cam = obstacleCameraRef.current;
-      if (cam && typeof cam.takePictureAsync === 'function' && obstacleCameraReadyRef.current) {
-        try {
-          // Low-end-device friendly capture: tiny frame, no processing, no shutter sound
-          const photo = await cam.takePictureAsync({
-            quality: 0.2,
-            base64: true,
-            skipProcessing: true,
-            exif: false,
-            shutterSound: false,
-          });
-          if (photo?.base64) {
-            labels = await detectFromBase64(photo.base64, { threshold: 0.25 });
-          }
-        } catch (_) {}
-      }
 
-      // Announce the result immediately — no preamble, no delay.
-      // Uses PRIORITY_OBJECT_DETECTION so it interrupts default navigation
-      // guidance but never an emergency announcement.
-      const message = labels.length > 0
-        ? `${labels.join(', ')} ahead. Proceed with caution.`
-        : 'Obstacle ahead. Proceed with caution.';
-      speakText(message, 0, PRIORITY_OBJECT_DETECTION);
-    } finally {
-      obstacleCheckInProgressRef.current = false;
-    }
+    InteractionManager.runAfterInteractions(async () => {
+      try {
+        let labels = [];
+        const cam = obstacleCameraRef.current;
+        if (cam && typeof cam.takePictureAsync === 'function' && obstacleCameraReadyRef.current) {
+          try {
+            // Tiny frame, no processing overhead, no shutter sound. The
+            // CameraView in the JSX also pins pictureSize to 640x480 so the
+            // capture itself is cheap.
+            const photo = await cam.takePictureAsync({
+              quality: 0.2,
+              base64: true,
+              skipProcessing: true,
+              exif: false,
+              shutterSound: false,
+            });
+            if (photo?.base64) {
+              // detectFromBase64 yields the JS thread between every stage —
+              // base64 decode is chunked, GPU readback uses async data(), and
+              // tf.nextFrame() runs between decode/preprocess/execute. So
+              // navigation guidance, emergency checks, and UI updates keep
+              // ticking while this runs in the background.
+              labels = await detectFromBase64(photo.base64, { threshold: 0.25 });
+            }
+          } catch (_) {}
+        }
+
+        // Announce the result immediately — no preamble, no delay.
+        // Uses PRIORITY_OBJECT_DETECTION so it interrupts default navigation
+        // guidance but never an emergency announcement.
+        const message = labels.length > 0
+          ? `${labels.join(', ')} ahead. Proceed with caution.`
+          : 'Obstacle ahead. Proceed with caution.';
+        speakText(message, 0, PRIORITY_OBJECT_DETECTION);
+      } finally {
+        // Always release the in-progress flag, even if an exception bubbled
+        // through the await chain — otherwise the next threshold drop would
+        // be permanently ignored.
+        obstacleCheckInProgressRef.current = false;
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -642,6 +664,12 @@ export default function NavigationScreen({ route }) {
             ref={obstacleCameraRef}
             style={{ width: 320, height: 240 }}
             facing="back"
+            // Force a small capture resolution. Without this the camera
+            // captures at the sensor's default (often multi-megapixel) which
+            // produces a JPEG that takes seconds to base64-encode/decode on a
+            // low-end device — the main cause of the "device hangs on
+            // detection" symptom.
+            pictureSize="640x480"
             onCameraReady={() => { obstacleCameraReadyRef.current = true; }}
           />
         </View>
