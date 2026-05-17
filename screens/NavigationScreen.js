@@ -21,6 +21,7 @@ import {
   preloadObstacleModel,
 } from '../utils/navigationObstacleAlert';
 import { sendEmergencyAlert } from '../utils/emergencyAlert';
+import { createMotionWatcher } from '../utils/motionDetector';
 import {
   speak as speechSpeak,
   stop as speechStop,
@@ -52,6 +53,11 @@ const OBSTACLE_COOLDOWN_MS = 3000;
 const OBSTACLE_REPEAT_MS = 4000;
 const EMERGENCY_CHECK_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes
 const EMERGENCY_ANSWER_TIMEOUT_MS = 30 * 1000;     // 30 seconds to answer
+// Stationary-based help check: if the accelerometer reports no motion for
+// STILLNESS_TRIGGER_MS, ask "Do you need help?". If the user doesn't answer
+// "no" within STILLNESS_ANSWER_TIMEOUT_MS, send an emergency alert.
+const STILLNESS_TRIGGER_MS = 10 * 1000;
+const STILLNESS_ANSWER_TIMEOUT_MS = 10 * 1000;
 
 // Speak only the first 2 words of a landmark/destination name
 const getSpokenName = (name) => {
@@ -82,6 +88,10 @@ export default function NavigationScreen({ route }) {
   const emergencyCheckTimerRef = useRef(null);
   const emergencyAnswerTimeoutRef = useRef(null);
   const isFocusedRef = useRef(true);
+  // Stillness help check
+  const motionWatcherRef = useRef(null);
+  const stillnessAnswerTimeoutRef = useRef(null);
+  const stillnessInProgressRef = useRef(false);
 
   // Stop any speech when this screen loses focus (user navigates away)
   useFocusEffect(
@@ -139,6 +149,74 @@ export default function NavigationScreen({ route }) {
         },
       };
     }, EMERGENCY_CHECK_INTERVAL_MS);
+  }, [currentUser?.uid, userProfile, currentLocation]);
+
+  // Stillness-triggered help check. The accelerometer watcher (started in the
+  // isNavigating effect below) calls this when the user has been stationary
+  // for STILLNESS_TRIGGER_MS. Flow:
+  //   - Speak "Do you need help?"
+  //   - Wait STILLNESS_ANSWER_TIMEOUT_MS for a yes/no transcript.
+  //   - "yes" / equivalent / unintelligible / no-answer  -> send emergency alert
+  //   - "no" / equivalent                                -> continue navigating
+  // The yes/no detection lives in VoiceCommandContext; "unintelligible" is
+  // signalled by VoiceCommandContext calling onAnswer('unintelligible').
+  const runStillnessHelpCheck = useCallback(() => {
+    if (stillnessInProgressRef.current) return;
+    // If the periodic 3-minute emergency Q&A is currently awaiting an answer,
+    // don't double-prompt — let it finish first. The watcher will re-arm and
+    // try again on the next stillness streak.
+    if (emergencyCheckRef?.current?.awaiting) return;
+
+    stillnessInProgressRef.current = true;
+
+    const triggerEmergencyAlert = (reason) => {
+      if (currentUser?.uid && userProfile?.emergencyContact && currentLocation) {
+        sendEmergencyAlert({
+          userId: currentUser.uid,
+          currentLocation,
+          userProfile,
+          trigger: reason,
+        })
+          .then(() => speakText('Emergency alert sent. Help is on the way.', 0, PRIORITY_EMERGENCY))
+          .catch(() => speakText('Failed to send emergency alert.', 0, PRIORITY_EMERGENCY));
+      } else {
+        speakText('Please set your emergency contact in profile settings first.', 0, PRIORITY_EMERGENCY);
+      }
+    };
+
+    speakText('Do you need help? Say yes or no.', 0, PRIORITY_EMERGENCY);
+
+    // No-answer timeout — counts as "send alert"
+    stillnessAnswerTimeoutRef.current = setTimeout(() => {
+      stillnessAnswerTimeoutRef.current = null;
+      if (emergencyCheckRef?.current?.awaiting) {
+        emergencyCheckRef.current = null;
+        triggerEmergencyAlert('stillnessNoAnswer');
+      }
+      stillnessInProgressRef.current = false;
+    }, STILLNESS_ANSWER_TIMEOUT_MS);
+
+    emergencyCheckRef.current = {
+      awaiting: true,
+      onAnswer: (answer) => {
+        if (stillnessAnswerTimeoutRef.current) {
+          clearTimeout(stillnessAnswerTimeoutRef.current);
+          stillnessAnswerTimeoutRef.current = null;
+        }
+        emergencyCheckRef.current = null;
+        if (answer === 'no') {
+          // Only "no" or its equivalents continue navigation.
+          speakText('Continuing navigation.', 0, PRIORITY_EMERGENCY);
+        } else {
+          // "yes", "unintelligible", or anything we couldn't classify as "no"
+          // is treated as a call for help.
+          triggerEmergencyAlert(
+            answer === 'unintelligible' ? 'stillnessUnintelligible' : 'stillnessYes'
+          );
+        }
+        stillnessInProgressRef.current = false;
+      },
+    };
   }, [currentUser?.uid, userProfile, currentLocation]);
 
   // Update destination and autoStart when route params change
@@ -235,6 +313,46 @@ export default function NavigationScreen({ route }) {
       if (emergencyAnswerTimeoutRef.current) clearTimeout(emergencyAnswerTimeoutRef.current);
     };
   }, [isNavigating, scheduleNextEmergencyCheck]);
+
+  // Motion-based help check. The watcher uses the phone's built-in
+  // accelerometer (negligible CPU/battery cost — see utils/motionDetector.js).
+  // When the user has been stationary for STILLNESS_TRIGGER_MS during active
+  // navigation, runStillnessHelpCheck speaks "Do you need help?" and waits
+  // for a yes/no answer.
+  useEffect(() => {
+    if (!isNavigating) return undefined;
+    motionWatcherRef.current = createMotionWatcher({
+      stillnessMs: STILLNESS_TRIGGER_MS,
+      onStationary: () => {
+        if (isFocusedRef.current && isNavigating) {
+          runStillnessHelpCheck();
+        }
+      },
+      onMoving: () => {
+        // If the user starts moving again before the question fired, cancel
+        // any in-flight stillness Q&A so we don't pester them.
+        if (stillnessAnswerTimeoutRef.current) {
+          clearTimeout(stillnessAnswerTimeoutRef.current);
+          stillnessAnswerTimeoutRef.current = null;
+        }
+        if (emergencyCheckRef?.current?.awaiting && stillnessInProgressRef.current) {
+          emergencyCheckRef.current = null;
+          stillnessInProgressRef.current = false;
+        }
+      },
+    });
+    return () => {
+      if (motionWatcherRef.current) {
+        motionWatcherRef.current.stop();
+        motionWatcherRef.current = null;
+      }
+      if (stillnessAnswerTimeoutRef.current) {
+        clearTimeout(stillnessAnswerTimeoutRef.current);
+        stillnessAnswerTimeoutRef.current = null;
+      }
+      stillnessInProgressRef.current = false;
+    };
+  }, [isNavigating, runStillnessHelpCheck]);
 
   // Track the last time we ran detection so we can throttle while distance stays below threshold
   const lastObstacleRunAtRef = useRef(0);

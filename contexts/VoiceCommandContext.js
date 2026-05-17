@@ -40,15 +40,24 @@ export const VoiceCommandProvider = ({ children, navigationRef }) => {
   const runCommand = async (transcript) => {
     const text = (transcript || '').trim().toLowerCase();
     if (emergencyCheckRef?.current?.awaiting && typeof emergencyCheckRef.current.onAnswer === 'function') {
-      const isYes = /^(yes|yeah|yep|yup|sure|correct|affirmative)$/.test(text);
-      const isNo = /^(no|nope|nah|negative)$/.test(text);
-      if (isYes || isNo) {
-        const answer = isYes ? 'yes' : 'no';
-        const onAnswer = emergencyCheckRef.current.onAnswer;
-        emergencyCheckRef.current = null;
-        onAnswer(answer);
-        return;
+      // Be permissive about phrasing — match yes/no anywhere in the utterance,
+      // not just as the whole transcript. E.g. "yes please send help" -> yes,
+      // "no I'm fine thanks" -> no.
+      const isYes = /\b(yes|yeah|yep|yup|sure|correct|affirmative|help|emergency)\b/.test(text);
+      const isNo = /\b(no|nope|nah|negative|fine|okay|ok|all good|alright|continue)\b/.test(text);
+      const onAnswer = emergencyCheckRef.current.onAnswer;
+      emergencyCheckRef.current = null;
+      if (isYes && !isNo) {
+        onAnswer('yes');
+      } else if (isNo && !isYes) {
+        onAnswer('no');
+      } else {
+        // Anything else — empty, ambiguous, both matched, garbled — is
+        // routed as 'unintelligible' so the caller can decide what to do.
+        // For the stillness check, that means: send the emergency alert.
+        onAnswer('unintelligible');
       }
+      return;
     }
 
     const cmdType = detectCommand(transcript);
