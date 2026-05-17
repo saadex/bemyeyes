@@ -1,0 +1,70 @@
+diff --git a/node_modules/react-native-worklets/android/build.gradle b/node_modules/react-native-worklets/android/build.gradle
+index 021f5bc..9ea9e0a 100644
+--- a/node_modules/react-native-worklets/android/build.gradle
++++ b/node_modules/react-native-worklets/android/build.gradle
+@@ -309,13 +309,13 @@ task assertMinimalReactNativeVersionTask {
+ preBuild.dependsOn(assertMinimalReactNativeVersionTask)
+ 
+ task assertNewArchitectureEnabledTask {
+-    onlyIf { !IS_NEW_ARCHITECTURE_ENABLED }
++    onlyIf { false } // Disabled to allow old architecture for voice module compatibility
+     doFirst {
+         throw new GradleException("[Worklets] Worklets require new architecture to be enabled. Please enable it by setting `newArchEnabled` to `true` in `gradle.properties`.")
+     }
+ }
+ 
+-preBuild.dependsOn(assertNewArchitectureEnabledTask)
++// preBuild.dependsOn(assertNewArchitectureEnabledTask) // Commented out to allow old architecture
+ 
+ task prepareWorkletsHeadersForPrefabs(type: Copy) {
+     from("$projectDir/src/main/cpp")
+diff --git a/node_modules/react-native-worklets/android/build/intermediates/prefab_package_header_only/prefab_publication.json/debug b/node_modules/react-native-worklets/android/build/intermediates/prefab_package_header_only/prefab_publication.json/debug
+new file mode 100644
+index 0000000..6f821c2
+--- /dev/null
++++ b/node_modules/react-native-worklets/android/build/intermediates/prefab_package_header_only/prefab_publication.json/debug
+@@ -0,0 +1,18 @@
++{
++  "installationFolder": "E:\\University Material\\New Folder\\app\\node_modules\\react-native-worklets\\android\\build\\intermediates\\prefab_package\\debug\\prefab",
++  "gradlePath": ":react-native-worklets",
++  "packageInfo": {
++    "packageName": "react-native-worklets",
++    "packageVersion": "0.5.1",
++    "packageSchemaVersion": 2,
++    "packageDependencies": [],
++    "modules": [
++      {
++        "moduleName": "worklets",
++        "moduleHeaders": "E:\\University Material\\New Folder\\app\\node_modules\\react-native-worklets\\android\\build\\prefab-headers\\worklets",
++        "moduleExportLibraries": [],
++        "abis": []
++      }
++    ]
++  }
++}
+\ No newline at end of file
+diff --git a/node_modules/react-native-worklets/android/build/intermediates/prefab_package_header_only/prefab_publication.json/release b/node_modules/react-native-worklets/android/build/intermediates/prefab_package_header_only/prefab_publication.json/release
+new file mode 100644
+index 0000000..6bc4ae8
+--- /dev/null
++++ b/node_modules/react-native-worklets/android/build/intermediates/prefab_package_header_only/prefab_publication.json/release
+@@ -0,0 +1,18 @@
++{
++  "installationFolder": "E:\\University Material\\New Folder\\app\\node_modules\\react-native-worklets\\android\\build\\intermediates\\prefab_package\\release\\prefab",
++  "gradlePath": ":react-native-worklets",
++  "packageInfo": {
++    "packageName": "react-native-worklets",
++    "packageVersion": "0.5.1",
++    "packageSchemaVersion": 2,
++    "packageDependencies": [],
++    "modules": [
++      {
++        "moduleName": "worklets",
++        "moduleHeaders": "E:\\University Material\\New Folder\\app\\node_modules\\react-native-worklets\\android\\build\\prefab-headers\\worklets",
++        "moduleExportLibraries": [],
++        "abis": []
++      }
++    ]
++  }
++}
+\ No newline at end of file
