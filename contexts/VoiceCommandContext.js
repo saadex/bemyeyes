@@ -60,11 +60,19 @@ export const VoiceCommandProvider = ({ children, navigationRef }) => {
       return;
     }
 
+    // NOTE: don't short-circuit on detectCommand === null. detectCommand only
+    // recognizes the FIXED patterns (setHome / setOffice / navigateHome / ...).
+    // The dynamic patterns — "save current location as <name>" and
+    // navigate-to-saved-landmark by word overlap — are tested inside
+    // processCommand. If we bail here, those new commands never run.
     const cmdType = detectCommand(transcript);
-    if (cmdType === null) return;
 
     const nav = navigationRef?.current;
-    const isNavigate = cmdType === 'navigateHome' || cmdType === 'navigateOffice';
+    // Pre-fetch fresh saved locations for any potentially-navigation utterance.
+    // We can't know it's a landmark-navigate command until processCommand runs,
+    // so we err on the side of fetching when no fixed command matched.
+    const isNavigate =
+      cmdType === 'navigateHome' || cmdType === 'navigateOffice' || cmdType === null;
     const contextSavedLocations = isNavigate && typeof getSavedLocationsAsync === 'function'
       ? (await getSavedLocationsAsync()) ?? savedLocations
       : savedLocations;
@@ -87,6 +95,21 @@ export const VoiceCommandProvider = ({ children, navigationRef }) => {
           } catch (_) {
             speak('Failed to save office location.');
           }
+        },
+        onSaveLandmark: async (name) => {
+          try {
+            await saveLocation('landmark', name);
+            speak(`Saved current location as ${name}.`);
+          } catch (_) {
+            speak(`Failed to save landmark ${name}.`);
+          }
+        },
+        onNavigateLandmark: (landmark) => {
+          // navigation.navigate(...) is already handled inside processCommand;
+          // here we just announce. The result.message handler at the bottom
+          // also speaks "Starting navigation to <name>" but we want the more
+          // specific phrasing for this case.
+          speak(`Starting navigation to ${landmark?.name || 'landmark'}.`);
         },
         saveLocation: saveLocation,
         onNavigateHome: () => {},
@@ -128,7 +151,14 @@ export const VoiceCommandProvider = ({ children, navigationRef }) => {
     );
 
     if (!result?.message || result.type === 'unknown') return;
-    if (result.type === 'setHome' || result.type === 'setOffice') return;
+    // These types handle their own speech inside their handlers — skip the
+    // generic "speak result.message" path to avoid duplicate announcements.
+    if (
+      result.type === 'setHome' ||
+      result.type === 'setOffice' ||
+      result.type === 'saveLandmark' ||
+      result.type === 'navigateLandmark'
+    ) return;
     // Emergency confirmations preempt anything currently being spoken.
     const priority = result.type === 'emergency' ? PRIORITY_EMERGENCY : PRIORITY_DEFAULT;
     speak(result.message, { priority });

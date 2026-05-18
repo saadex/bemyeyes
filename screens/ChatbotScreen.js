@@ -893,6 +893,17 @@ export default function ChatbotScreen({ navigation }) {
         if (stopNavigationRef?.current) stopNavigationRef.current();
         addMessage('bot', '🛑 Navigation stopped.');
       },
+      onSaveLandmark: async (name) => {
+        try {
+          await saveLocation('landmark', name);
+          addMessage('bot', `✅ Saved current location as ${name}.`);
+        } catch (_) {
+          addMessage('bot', `❌ Failed to save landmark ${name}.`);
+        }
+      },
+      onNavigateLandmark: (landmark) => {
+        addMessage('bot', `🚗 Starting navigation to ${landmark?.name || 'landmark'}...`);
+      },
       onEmergency: () => {
         // Emergency side effects are handled centrally after command parsing
       },

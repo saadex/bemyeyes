@@ -692,6 +692,19 @@ export default function VoiceCommandScreen({ navigation }) {
           }
           setRecognizedText('');
         },
+        onSaveLandmark: async (name) => {
+          try {
+            await saveLocation('landmark', name);
+            speak(`Saved current location as ${name}.`);
+          } catch (_) {
+            speak(`Failed to save landmark ${name}.`);
+          }
+          setRecognizedText('');
+        },
+        onNavigateLandmark: (landmark) => {
+          setRecognizedText('');
+          speak(`Starting navigation to ${landmark?.name || 'landmark'}.`);
+        },
         onNavigateHome: (location) => {
           setRecognizedText('');
           if (!location) speak('Home location not set. Save your home location first.');
@@ -739,7 +752,14 @@ export default function VoiceCommandScreen({ navigation }) {
       { savedLocations: contextSavedLocations, navigation }
     );
     setRecognizedText('');
-    if (result?.message && result.type !== 'unknown' && result.type !== 'setHome' && result.type !== 'setOffice') {
+    // setHome/setOffice/saveLandmark/navigateLandmark handle their own speech
+    // inside their handlers — skip the generic announcement to avoid double-speak.
+    const handlesOwnSpeech =
+      result.type === 'setHome' ||
+      result.type === 'setOffice' ||
+      result.type === 'saveLandmark' ||
+      result.type === 'navigateLandmark';
+    if (result?.message && result.type !== 'unknown' && !handlesOwnSpeech) {
       // Emergency confirmations preempt anything currently being spoken.
       const priority = result.type === 'emergency' ? PRIORITY_EMERGENCY : PRIORITY_DEFAULT;
       speak(result.message, priority);
