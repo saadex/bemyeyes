@@ -33,6 +33,26 @@ let activePriority = 0;     // 0 = nothing speaking
 let activeId = 0;           // monotonic id for the currently speaking utterance
 let nextId = 1;
 
+// Toggle controlled by userProfile.settings.audioFeedback (default true). Synced
+// from AuthContext whenever the profile loads or changes. Emergency-priority
+// utterances bypass this so a user can never accidentally silence a real alert.
+let audioFeedbackEnabled = true;
+
+/**
+ * Enable / disable non-emergency audio feedback. Called by AuthContext when
+ * the user toggles "Audio Feedback" in settings.
+ */
+export function setAudioFeedbackEnabled(enabled) {
+  audioFeedbackEnabled = enabled !== false; // default true on undefined
+  if (!audioFeedbackEnabled) {
+    // Stop any non-emergency speech that's currently in flight.
+    if (activePriority > 0 && activePriority < PRIORITY_EMERGENCY) {
+      try { if (Speech && Speech.stop) Speech.stop(); } catch (_) {}
+      activePriority = 0;
+    }
+  }
+}
+
 function isSpeechAvailable() {
   return !!(Speech && typeof Speech.speak === 'function');
 }
@@ -57,6 +77,13 @@ export function speak(text, options = {}) {
   if (!cleaned) return false;
 
   const priority = options.priority ?? PRIORITY_DEFAULT;
+
+  // Audio Feedback setting: non-emergency speech is suppressed when the user
+  // has turned the toggle off. Emergency speech always plays so a real alert
+  // is never silenced by a stale settings choice.
+  if (!audioFeedbackEnabled && priority < PRIORITY_EMERGENCY) {
+    return false;
+  }
 
   // If something higher priority is currently speaking, drop this utterance.
   if (activePriority > priority) {

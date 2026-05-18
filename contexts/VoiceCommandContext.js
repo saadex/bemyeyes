@@ -214,8 +214,14 @@ export const VoiceCommandProvider = ({ children, navigationRef }) => {
     } catch (_) {}
   };
 
+  // Honor the "Voice Commands" toggle from settings. When it's off we stop
+  // the always-on listener entirely (no mic permission, no speech-to-text
+  // dispatch). It defaults to true on undefined so existing users aren't
+  // accidentally silenced.
+  const voiceEnabledSetting = userProfile?.settings?.voiceEnabled !== false;
+
   useEffect(() => {
-    if (!currentUser) {
+    if (!currentUser || !voiceEnabledSetting) {
       stopListeningLoop();
       return;
     }
@@ -248,7 +254,7 @@ export const VoiceCommandProvider = ({ children, navigationRef }) => {
 
     init();
     return () => stopListeningLoop();
-  }, [currentUser?.uid]);
+  }, [currentUser?.uid, voiceEnabledSetting]);
 
   return (
     <VoiceCommandContext.Provider value={{}}>

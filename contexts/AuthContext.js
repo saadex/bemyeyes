@@ -14,6 +14,7 @@ import {
   Timestamp
 } from 'firebase/firestore';
 import { auth, firestore } from '../config/firebase';
+import { setAudioFeedbackEnabled } from '../utils/speechManager';
 
 const AuthContext = createContext();
 
@@ -21,6 +22,14 @@ export const AuthProvider = ({ children }) => {
   const [currentUser, setCurrentUser] = useState(null);
   const [userProfile, setUserProfile] = useState(null);
   const [loading, setLoading] = useState(true);
+
+  // Push the audioFeedback setting into the speech manager whenever it
+  // changes. The speech manager is a plain JS module (no React state) so
+  // every screen / context that calls speak() picks up the new value for
+  // free, with no extra prop drilling.
+  useEffect(() => {
+    setAudioFeedbackEnabled(userProfile?.settings?.audioFeedback !== false);
+  }, [userProfile?.settings?.audioFeedback]);
 
   const fetchUserProfile = async (uid) => {
     try {

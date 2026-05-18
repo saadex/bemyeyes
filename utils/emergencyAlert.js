@@ -29,6 +29,12 @@ export async function sendEmergencyAlert({
   if (!userId) {
     throw new Error('No signed-in user.');
   }
+  // Respect the "Emergency Alerts" setting. If the user explicitly turned it
+  // off, we refuse to send anything — manual or automatic. The thrown error
+  // surfaces in every existing catch handler so the user gets feedback.
+  if (userProfile && userProfile.settings && userProfile.settings.emergencyAlerts === false) {
+    throw new Error('Emergency alerts are disabled in settings.');
+  }
   if (!isValidLocation(currentLocation)) {
     throw new Error('Location is unavailable.');
   }

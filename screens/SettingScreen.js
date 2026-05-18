@@ -12,11 +12,17 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 
+// Only settings that are actually consumed somewhere in the app. Each key
+// here is wired to a corresponding consumer — see:
+//   voiceEnabled    -> contexts/VoiceCommandContext.js
+//   emergencyAlerts -> utils/emergencyAlert.js
+//   fallDetection   -> screens/NavigationScreen.js (motion watcher)
+//   audioFeedback   -> utils/speechManager.js (via AuthContext sync)
+//   vibrationAlerts -> screens/NavigationScreen.js (obstacle + emergency)
+//   nightMode       -> contexts/ThemeContext.js
 const defaultSettings = {
   voiceEnabled: true,
   emergencyAlerts: true,
-  locationSharing: true,
-  bluetoothAutoConnect: true,
   fallDetection: true,
   audioFeedback: true,
   vibrationAlerts: true,
@@ -56,49 +62,35 @@ export default function SettingsScreen({ navigation }) {
   const settingsOptions = [
     {
       title: 'Voice Commands',
-      subtitle: 'Enable voice control features',
+      subtitle: 'Enable always-on voice command listener',
       key: 'voiceEnabled',
       icon: 'mic',
       color: '#4A90E2'
     },
     {
       title: 'Emergency Alerts',
-      subtitle: 'Send alerts to emergency contacts',
+      subtitle: 'Allow alerts to be sent to your emergency contact',
       key: 'emergencyAlerts',
       icon: 'emergency',
       color: '#F44336'
     },
     {
-      title: 'Location Sharing',
-      subtitle: 'Share location with guardians',
-      key: 'locationSharing',
-      icon: 'location-on',
-      color: '#4CAF50'
-    },
-    {
-      title: 'Bluetooth Auto-Connect',
-      subtitle: 'Automatically connect to Arduino device',
-      key: 'bluetoothAutoConnect',
-      icon: 'bluetooth',
-      color: '#2196F3'
-    },
-    {
-      title: 'Fall Detection',
-      subtitle: 'Monitor for sudden altitude changes',
+      title: 'Fall / Stillness Detection',
+      subtitle: 'Prompt for help if you stop moving while navigating',
       key: 'fallDetection',
       icon: 'warning',
       color: '#FF9800'
     },
     {
       title: 'Audio Feedback',
-      subtitle: 'Enable spoken navigation instructions',
+      subtitle: 'Speak navigation and status updates (emergency speech always plays)',
       key: 'audioFeedback',
       icon: 'volume-up',
       color: '#9C27B0'
     },
     {
       title: 'Vibration Alerts',
-      subtitle: 'Use vibration for notifications',
+      subtitle: 'Vibrate on obstacle detection and emergency events',
       key: 'vibrationAlerts',
       icon: 'vibration',
       color: '#607D8B'
@@ -115,17 +107,10 @@ export default function SettingsScreen({ navigation }) {
   const menuOptions = [
     {
       title: 'Profile Information',
-      subtitle: 'Edit personal details',
+      subtitle: 'Edit personal details and emergency contact',
       icon: 'person',
       color: '#4A90E2',
       action: () => navigation.navigate('Profile')
-    },
-    {
-      title: 'Emergency Contacts',
-      subtitle: 'Manage emergency contact list',
-      icon: 'contact-phone',
-      color: '#F44336',
-      action: () => {}
     },
     {
       title: 'Device Management',
@@ -133,27 +118,6 @@ export default function SettingsScreen({ navigation }) {
       icon: 'devices',
       color: '#4CAF50',
       action: () => navigation.navigate('DeviceManagement')
-    },
-    {
-      title: 'Privacy & Security',
-      subtitle: 'Data privacy and security settings',
-      icon: 'security',
-      color: '#FF9800',
-      action: () => {}
-    },
-    {
-      title: 'Help & Support',
-      subtitle: 'Get help and contact support',
-      icon: 'help',
-      color: '#9C27B0',
-      action: () => {}
-    },
-    {
-      title: 'About',
-      subtitle: 'App version and information',
-      icon: 'info',
-      color: '#607D8B',
-      action: () => {}
     }
   ];
 

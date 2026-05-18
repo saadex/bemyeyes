@@ -6,6 +6,7 @@ import {
     StyleSheet,
     Text,
     TouchableOpacity,
+    Vibration,
     View
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -63,6 +64,13 @@ const STILLNESS_ANSWER_TIMEOUT_MS = 10 * 1000;
 const getSpokenName = (name) => {
   if (!name || typeof name !== 'string') return '';
   return name.trim().split(/\s+/).slice(0, 2).join(' ');
+};
+
+// Vibrate the device if the user has "Vibration Alerts" enabled in settings.
+// userProfile is passed in so the helper stays a pure function (no hooks).
+const buzzIfEnabled = (userProfile, durationMs = 200) => {
+  if (userProfile?.settings?.vibrationAlerts === false) return;
+  try { Vibration.vibrate(durationMs); } catch (_) {}
 };
 
 export default function NavigationScreen({ route }) {
@@ -131,6 +139,7 @@ export default function NavigationScreen({ route }) {
           emergencyCheckRef.current = null;
           if (answer === 'yes') {
             if (currentUser?.uid && userProfile?.emergencyContact && currentLocation) {
+              buzzIfEnabled(userProfile, 800);
               sendEmergencyAlert({
                 userId: currentUser.uid,
                 currentLocation,
@@ -138,7 +147,13 @@ export default function NavigationScreen({ route }) {
                 trigger: 'navigationCheck',
               })
                 .then(() => speakText('Emergency alert sent. Help is on the way.', 0, PRIORITY_EMERGENCY))
-                .catch(() => speakText('Failed to send emergency alert.', 0, PRIORITY_EMERGENCY));
+                .catch((err) =>
+                  speakText(
+                    err?.message || 'Failed to send emergency alert.',
+                    0,
+                    PRIORITY_EMERGENCY
+                  )
+                );
             } else {
               speakText('Please set your emergency contact in profile settings first.', 0, PRIORITY_EMERGENCY);
             }
@@ -171,6 +186,8 @@ export default function NavigationScreen({ route }) {
 
     const triggerEmergencyAlert = (reason) => {
       if (currentUser?.uid && userProfile?.emergencyContact && currentLocation) {
+        // Long buzz pattern as a tactile emergency cue, gated by setting.
+        buzzIfEnabled(userProfile, 800);
         sendEmergencyAlert({
           userId: currentUser.uid,
           currentLocation,
@@ -178,7 +195,13 @@ export default function NavigationScreen({ route }) {
           trigger: reason,
         })
           .then(() => speakText('Emergency alert sent. Help is on the way.', 0, PRIORITY_EMERGENCY))
-          .catch(() => speakText('Failed to send emergency alert.', 0, PRIORITY_EMERGENCY));
+          .catch((err) =>
+            speakText(
+              err?.message || 'Failed to send emergency alert.',
+              0,
+              PRIORITY_EMERGENCY
+            )
+          );
       } else {
         speakText('Please set your emergency contact in profile settings first.', 0, PRIORITY_EMERGENCY);
       }
@@ -273,6 +296,9 @@ export default function NavigationScreen({ route }) {
           ? `${labels.join(', ')} ahead. Proceed with caution.`
           : 'Obstacle ahead. Proceed with caution.';
         speakText(message, 0, PRIORITY_OBJECT_DETECTION);
+        // Tactile cue alongside the speech — short single buzz so the user
+        // feels the obstacle warning even if audio is muffled.
+        buzzIfEnabled(userProfile, 200);
       } finally {
         // Always release the in-progress flag, even if an exception bubbled
         // through the await chain — otherwise the next threshold drop would
@@ -318,9 +344,10 @@ export default function NavigationScreen({ route }) {
   // accelerometer (negligible CPU/battery cost — see utils/motionDetector.js).
   // When the user has been stationary for STILLNESS_TRIGGER_MS during active
   // navigation, runStillnessHelpCheck speaks "Do you need help?" and waits
-  // for a yes/no answer.
+  // for a yes/no answer. Gated on the "Fall / Stillness Detection" setting.
+  const fallDetectionEnabled = userProfile?.settings?.fallDetection !== false;
   useEffect(() => {
-    if (!isNavigating) return undefined;
+    if (!isNavigating || !fallDetectionEnabled) return undefined;
     motionWatcherRef.current = createMotionWatcher({
       stillnessMs: STILLNESS_TRIGGER_MS,
       onStationary: () => {
@@ -352,7 +379,7 @@ export default function NavigationScreen({ route }) {
       }
       stillnessInProgressRef.current = false;
     };
-  }, [isNavigating, runStillnessHelpCheck]);
+  }, [isNavigating, runStillnessHelpCheck, fallDetectionEnabled]);
 
   // Track the last time we ran detection so we can throttle while distance stays below threshold
   const lastObstacleRunAtRef = useRef(0);
