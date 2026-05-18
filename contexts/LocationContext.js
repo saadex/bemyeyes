@@ -1,7 +1,15 @@
 import React, { createContext, useState, useEffect, useContext } from 'react';
 import * as Location from 'expo-location';
 import { auth, firestore } from '../config/firebase';
-import { doc, getDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import {
+  doc,
+  getDoc,
+  updateDoc,
+  serverTimestamp,
+  addDoc,
+  collection,
+  getDocs,
+} from 'firebase/firestore';
 
 const LocationContext = createContext({
   location: null,
@@ -76,28 +84,37 @@ export const LocationProvider = ({ children }) => {
     if (!locationToSave) return;
 
     try {
-      const userDocRef = doc(firestore, 'users', auth.currentUser.uid);
-      const locationData = {
-        ...locationToSave,
-        name,
-        timestamp: serverTimestamp()
-      };
+      const uid = auth.currentUser.uid;
+      const userDocRef = doc(firestore, 'users', uid);
 
-      let updateData = {};
-      
-      if (type === 'home') {
-        updateData.savedHome = locationData;
-      } else if (type === 'office') {
-        updateData.savedOffice = locationData;
-      } else if (type === 'landmark') {
-        const userDocSnap = await getDoc(userDocRef);
-        const existingData = userDocSnap.exists() ? userDocSnap.data() : {};
-        const existingLandmarks = existingData.savedLandmarks || [];
-        updateData.savedLandmarks = [...existingLandmarks, locationData];
+      if (type === 'landmark') {
+        // Landmarks live in a sub-collection: users/{uid}/landmarks/{auto-id}.
+        // Each landmark is its own document, so serverTimestamp() is legal
+        // (Firestore disallows it inside arrays — see git history for why this
+        // structure replaced the previous savedLandmarks: [] array).
+        const landmarksColRef = collection(firestore, 'users', uid, 'landmarks');
+        await addDoc(landmarksColRef, {
+          ...locationToSave,
+          name,
+          timestamp: serverTimestamp(),
+        });
+        // Best-effort bump of updatedAt on the parent for activity tracking.
+        try {
+          await updateDoc(userDocRef, { updatedAt: serverTimestamp() });
+        } catch (_) {}
+      } else {
+        // home / office stay as nested maps on the parent user doc —
+        // serverTimestamp() inside a top-level nested map is allowed.
+        const locationData = {
+          ...locationToSave,
+          name,
+          timestamp: serverTimestamp(),
+        };
+        const updateData = { updatedAt: serverTimestamp() };
+        if (type === 'home') updateData.savedHome = locationData;
+        else if (type === 'office') updateData.savedOffice = locationData;
+        await updateDoc(userDocRef, updateData);
       }
-
-      updateData.updatedAt = serverTimestamp();
-      await updateDoc(userDocRef, updateData);
 
       await loadSavedLocations();
     } catch (error) {
@@ -134,16 +151,47 @@ export const LocationProvider = ({ children }) => {
   const getSavedLocationsAsync = async () => {
     if (!auth.currentUser) return null;
     try {
-      const userDocRef = doc(firestore, 'users', auth.currentUser.uid);
-      const userDocSnap = await getDoc(userDocRef);
+      const uid = auth.currentUser.uid;
+      const userDocRef = doc(firestore, 'users', uid);
+
+      // Read the parent doc + the landmarks sub-collection in parallel.
+      // No orderBy here: an offline addDoc resolves with a pending
+      // serverTimestamp, and orderBy on that field would temporarily exclude
+      // the doc. Cheaper and more robust to sort client-side.
+      const landmarksColRef = collection(firestore, 'users', uid, 'landmarks');
+      const [userDocSnap, landmarksSnap] = await Promise.all([
+        getDoc(userDocRef),
+        getDocs(landmarksColRef).catch(() => null),
+      ]);
+
       if (!userDocSnap.exists()) return null;
       const data = userDocSnap.data();
+
+      // New canonical source: per-document sub-collection entries.
+      const subCollectionLandmarks = landmarksSnap
+        ? landmarksSnap.docs
+            .map((d) => ({ id: d.id, ...d.data() }))
+            .filter((loc) => isValidLocation(loc))
+            .sort((a, b) => {
+              // Sort oldest -> newest. timestamp may be null briefly for
+              // freshly-written docs whose server resolve hasn't returned.
+              const ta = a.timestamp?.toMillis ? a.timestamp.toMillis() : 0;
+              const tb = b.timestamp?.toMillis ? b.timestamp.toMillis() : 0;
+              return ta - tb;
+            })
+        : [];
+
+      // Backward compat: also include any landmarks still living in the old
+      // savedLandmarks array on the parent doc. New writes go to the sub-
+      // collection, so this list only matters for users with legacy data.
+      const legacyLandmarks = Array.isArray(data.savedLandmarks)
+        ? data.savedLandmarks.filter((loc) => isValidLocation(loc))
+        : [];
+
       return {
         home: data.savedHome && isValidLocation(data.savedHome) ? data.savedHome : null,
         office: data.savedOffice && isValidLocation(data.savedOffice) ? data.savedOffice : null,
-        landmarks: Array.isArray(data.savedLandmarks)
-          ? data.savedLandmarks.filter(loc => isValidLocation(loc))
-          : [],
+        landmarks: [...legacyLandmarks, ...subCollectionLandmarks],
       };
     } catch (error) {
       console.error('Error fetching saved locations:', error);
