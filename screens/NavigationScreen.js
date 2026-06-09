@@ -29,6 +29,7 @@ import {
   PRIORITY_DEFAULT,
   PRIORITY_OBJECT_DETECTION,
   PRIORITY_EMERGENCY,
+  PRIORITY_OBSTACLE_INSTRUCTION,
 } from '../utils/speechManager';
 
 // Import Speech with error handling for missing native module
@@ -47,7 +48,7 @@ try {
   Speech = null;
 }
 
-const OBSTACLE_DISTANCE_CM = 150;
+const OBSTACLE_DISTANCE_CM = 200;
 // Minimum gap between two obstacle announcements (prevents back-to-back speech overlap on low-end devices)
 const OBSTACLE_COOLDOWN_MS = 3000;
 // While distance stays below threshold, re-run detection at this cadence
@@ -73,6 +74,43 @@ const buzzIfEnabled = (userProfile, durationMs = 200) => {
   try { Vibration.vibrate(durationMs); } catch (_) {}
 };
 
+// Pick a "turn <side> and move forward" instruction. When `detections` carries
+// per-box position info, the side is chosen to steer AWAY from the half of the
+// view that's more obstructed; if both halves are heavily obstructed the user
+// is told to turn around; if nothing was detected (camera saw no labelled
+// objects but the ultrasonic still tripped) we fall back to a random side.
+//
+// `area` is the box's fractional area in 0..1; `cx` is the box center X in
+// 0..1 across the original frame (0 = left edge, 1 = right edge).
+const BOTH_BLOCKED_AREA = 0.25; // each half must exceed this to trigger 180°
+const MIN_DECISIVE_DIFF = 0.03; // below this delta we treat the sides as tied
+const pickTurnInstruction = (detections) => {
+  let leftMass = 0;
+  let rightMass = 0;
+  if (Array.isArray(detections)) {
+    for (const d of detections) {
+      if (!d || typeof d.cx !== 'number' || typeof d.area !== 'number') continue;
+      if (d.cx < 0.5) leftMass += d.area;
+      else rightMass += d.area;
+    }
+  }
+
+  // Both halves heavily blocked → turn around.
+  if (leftMass > BOTH_BLOCKED_AREA && rightMass > BOTH_BLOCKED_AREA) {
+    return 'Turn around and move forward.';
+  }
+
+  // Nothing meaningful detected on either side → random 90°.
+  if (Math.abs(leftMass - rightMass) < MIN_DECISIVE_DIFF) {
+    const side = Math.random() < 0.5 ? 'right' : 'left';
+    return `Turn ${side} and move forward.`;
+  }
+
+  // Steer away from the more obstructed half.
+  const side = leftMass > rightMass ? 'right' : 'left';
+  return `Turn ${side} and move forward.`;
+};
+
 export default function NavigationScreen({ route }) {
   const { currentLocation, savedLocations, getDistanceToLocation } = useLocation();
   const theme = useTheme();
@@ -93,6 +131,10 @@ export default function NavigationScreen({ route }) {
   const lastArduinoDistanceAbove10Ref = useRef(null);
   const obstacleCameraReadyRef = useRef(false);
   const obstacleCheckInProgressRef = useRef(false);
+  // True while the "turn X and move forward" instruction is being spoken.
+  // While set, no new obstacle detection cycle is allowed to start so the
+  // user can hear the full command before any follow-up reading interrupts it.
+  const obstacleInstructionInProgressRef = useRef(false);
   const emergencyCheckTimerRef = useRef(null);
   const emergencyAnswerTimeoutRef = useRef(null);
   const isFocusedRef = useRef(true);
@@ -260,11 +302,15 @@ export default function NavigationScreen({ route }) {
   // and other interactions interleave with the heavy work.
   const runObstacleCheck = useCallback(() => {
     if (obstacleCheckInProgressRef.current) return;
+    // Block while a previous turn instruction is still being spoken — the
+    // user must hear the full command before a new detection cycle starts.
+    if (obstacleInstructionInProgressRef.current) return;
     obstacleCheckInProgressRef.current = true;
 
     InteractionManager.runAfterInteractions(async () => {
       try {
         let labels = [];
+        let detections = [];
         const cam = obstacleCameraRef.current;
         if (cam && typeof cam.takePictureAsync === 'function' && obstacleCameraReadyRef.current) {
           try {
@@ -284,21 +330,47 @@ export default function NavigationScreen({ route }) {
               // tf.nextFrame() runs between decode/preprocess/execute. So
               // navigation guidance, emergency checks, and UI updates keep
               // ticking while this runs in the background.
-              labels = await detectFromBase64(photo.base64, { threshold: 0.25 });
+              const out = await detectFromBase64(photo.base64, { threshold: 0.25 });
+              labels = out?.labels ?? [];
+              detections = out?.detections ?? [];
             }
           } catch (_) {}
         }
 
-        // Announce the result immediately — no preamble, no delay.
-        // Uses PRIORITY_OBJECT_DETECTION so it interrupts default navigation
-        // guidance but never an emergency announcement.
-        const message = labels.length > 0
-          ? `${labels.join(', ')} ahead. Proceed with caution.`
-          : 'Obstacle ahead. Proceed with caution.';
-        speakText(message, 0, PRIORITY_OBJECT_DETECTION);
+        // Compose: "<label> ahead. <turn instruction>"
+        // pickTurnInstruction uses detections' cx/area to steer AWAY from the
+        // more-obstructed half of the view; both blocked → "turn around";
+        // no detections → random side at 90°.
+        const prefix = labels.length > 0
+          ? `${labels.join(', ')} ahead.`
+          : 'Obstacle ahead.';
+        const turn = pickTurnInstruction(detections);
+        const message = `${prefix} ${turn}`;
+
         // Tactile cue alongside the speech — short single buzz so the user
         // feels the obstacle warning even if audio is muffled.
         buzzIfEnabled(userProfile, 200);
+
+        // Speak at PRIORITY_OBSTACLE_INSTRUCTION (highest). The gating ref
+        // is set BEFORE we call speak so a parallel detection trigger can't
+        // slip in between this set and the speech actually starting; it's
+        // cleared in onDone/onError/onStopped so a dropped utterance never
+        // wedges the gate permanently.
+        obstacleInstructionInProgressRef.current = true;
+        const releaseGate = () => { obstacleInstructionInProgressRef.current = false; };
+        const cleanText = (message || '').replace(/\n/g, '. ').trim();
+        let queued = false;
+        if (isFocusedRef.current && cleanText) {
+          queued = speechSpeak(cleanText, {
+            priority: PRIORITY_OBSTACLE_INSTRUCTION,
+            onDone: releaseGate,
+            onError: releaseGate,
+          });
+        }
+        // If the utterance was dropped (audio feedback off, speech unavailable,
+        // screen unfocused) the manager's onDone never fires — release now so
+        // the next threshold drop can re-trigger detection.
+        if (!queued) releaseGate();
       } finally {
         // Always release the in-progress flag, even if an exception bubbled
         // through the await chain — otherwise the next threshold drop would
@@ -306,7 +378,7 @@ export default function NavigationScreen({ route }) {
         obstacleCheckInProgressRef.current = false;
       }
     });
-  }, []);
+  }, [userProfile]);
 
   useEffect(() => {
     if (isNavigating && Camera?.requestCameraPermissionsAsync) {
@@ -395,6 +467,9 @@ export default function NavigationScreen({ route }) {
       lastArduinoDistanceAbove10Ref.current = true;
       return;
     }
+    // Hold off any new detection while a turn instruction is still being
+    // spoken — the user needs to hear the full command first.
+    if (obstacleInstructionInProgressRef.current) return;
 
     const now = Date.now();
     const wasAbove = lastArduinoDistanceAbove10Ref.current !== false;

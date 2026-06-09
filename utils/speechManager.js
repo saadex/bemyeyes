@@ -1,9 +1,10 @@
 /**
  * Centralized speech manager with a strict priority hierarchy:
  *
- *   PRIORITY_EMERGENCY (3)       — emergency alerts, emergency check Q&A
- *   PRIORITY_OBJECT_DETECTION (2) — obstacle / object detection announcements
- *   PRIORITY_DEFAULT (1)          — navigation guidance, chatbot replies, status
+ *   PRIORITY_OBSTACLE_INSTRUCTION (4) — "turn X and move forward" command after obstacle detection
+ *   PRIORITY_EMERGENCY (3)            — emergency alerts, emergency check Q&A
+ *   PRIORITY_OBJECT_DETECTION (2)     — obstacle / object detection announcements
+ *   PRIORITY_DEFAULT (1)              — navigation guidance, chatbot replies, status
  *
  * Rules:
  *   - A higher-priority utterance always interrupts an in-flight utterance.
@@ -28,6 +29,7 @@ try {
 export const PRIORITY_DEFAULT = 1;
 export const PRIORITY_OBJECT_DETECTION = 2;
 export const PRIORITY_EMERGENCY = 3;
+export const PRIORITY_OBSTACLE_INSTRUCTION = 4;
 
 let activePriority = 0;     // 0 = nothing speaking
 let activeId = 0;           // monotonic id for the currently speaking utterance
@@ -79,8 +81,9 @@ export function speak(text, options = {}) {
   const priority = options.priority ?? PRIORITY_DEFAULT;
 
   // Audio Feedback setting: non-emergency speech is suppressed when the user
-  // has turned the toggle off. Emergency speech always plays so a real alert
-  // is never silenced by a stale settings choice.
+  // has turned the toggle off. Emergency and obstacle-instruction speech always
+  // play so a real alert or safety-critical turn command is never silenced by
+  // a stale settings choice.
   if (!audioFeedbackEnabled && priority < PRIORITY_EMERGENCY) {
     return false;
   }
@@ -149,4 +152,4 @@ export function getCurrentPriority() {
   return activePriority;
 }
 
-export default { speak, stop, getCurrentPriority, PRIORITY_DEFAULT, PRIORITY_OBJECT_DETECTION, PRIORITY_EMERGENCY };
+export default { speak, stop, getCurrentPriority, PRIORITY_DEFAULT, PRIORITY_OBJECT_DETECTION, PRIORITY_EMERGENCY, PRIORITY_OBSTACLE_INSTRUCTION };

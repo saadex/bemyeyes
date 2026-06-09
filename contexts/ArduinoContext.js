@@ -109,7 +109,9 @@ export const ArduinoProvider = ({ children }) => {
     });
     for (const line of lines) {
       const cm = parseDistanceFromLine(line);
-      if (cm != null && !Number.isNaN(cm)) {
+      // Ignore 0 — HC-SR04 returns 0 on echo timeout (no obstacle in range),
+      // which would otherwise be misread as an obstacle right against the user.
+      if (cm != null && !Number.isNaN(cm) && cm > 0) {
         setArduinoDistanceCm(cm);
         break;
       }
