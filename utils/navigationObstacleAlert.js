@@ -134,12 +134,17 @@ const DEFAULT_THRESHOLD = 0.25;
 /**
  * @param {string} base64Jpeg - Base64-encoded JPEG from takePictureAsync
  * @param {{ threshold?: number }} options
- * @returns {Promise<string[]>} - Detected object labels (e.g. ['person', 'chair'])
+ * @returns {Promise<{ labels: string[], detections: Array<{ label: string, score: number, cx: number, area: number }> }>}
+ *   - `labels` — deduplicated label list, preserved for callers that only need names.
+ *   - `detections` — per-box info. `cx` is the box center X normalized 0..1
+ *     across the *original* frame width (0 = left edge, 1 = right edge), and
+ *     `area` is the box's fractional area of the original frame (0..1). These
+ *     let the caller decide which side of the view is more obstructed.
  */
 export async function detectFromBase64(base64Jpeg, options = {}) {
   const threshold = options.threshold ?? DEFAULT_THRESHOLD;
   const { model, inputTensorSize } = await ensureTfAndModel();
-  if (!inputTensorSize || inputTensorSize.length < 4) return [];
+  if (!inputTensorSize || inputTensorSize.length < 4) return { labels: [], detections: [] };
 
   tf.engine().startScope();
   // Track tensors so the finally block can dispose anything still allocated
@@ -157,9 +162,12 @@ export async function detectFromBase64(base64Jpeg, options = {}) {
     imageTensor = decodeJpeg(imageBytes, 3);
     await microYield();
 
-    // Stage 3: preprocess (pad + resize + normalize + add batch dim)
+    // Stage 3: preprocess (pad + resize + normalize + add batch dim).
+    // preprocess pads the image to a square, so model boxes are normalized
+    // across the *padded* extent. xRatio / yRatio map them back to the
+    // original frame (xRatio = paddedW / origW, yRatio = paddedH / origH).
     await frameYield();
-    const [preInput] = preprocess(
+    const [preInput, xRatio, yRatio] = preprocess(
       imageTensor,
       inputTensorSize[2],
       inputTensorSize[1]
@@ -181,7 +189,8 @@ export async function detectFromBase64(base64Jpeg, options = {}) {
 
     // Stage 5: ASYNC GPU → CPU readback. `data()` returns a promise so timers,
     // animations, and gestures continue running during the readback.
-    const [scoresData, classesData] = await Promise.all([
+    const [boxesData, scoresData, classesData] = await Promise.all([
+      boxes.data(),
       scores.data(),
       classes.data(),
     ]);
@@ -191,9 +200,14 @@ export async function detectFromBase64(base64Jpeg, options = {}) {
     res = null;
     await microYield();
 
-    // Stage 6: collate labels (cheap, runs sync but on small arrays only)
+    // Stage 6: collate. `labels` keeps the legacy deduped-name list; `detections`
+    // carries per-box position so the caller can pick which side of the view
+    // is more obstructed. Box layout in `boxesData` is [x1, y1, x2, y2] per
+    // detection, normalized across the padded square — scale x by xRatio and
+    // y by yRatio (with clamp) to get original-frame-normalized coords.
     const seen = new Set();
     const result = [];
+    const detections = [];
     for (let i = 0; i < scoresData.length; i++) {
       if (scoresData[i] > threshold) {
         const classIdx = Math.round(classesData[i]);
@@ -202,9 +216,16 @@ export async function detectFromBase64(base64Jpeg, options = {}) {
           seen.add(label);
           result.push(label);
         }
+        const x1 = Math.min(1, Math.max(0, boxesData[i * 4] * xRatio));
+        const y1 = Math.min(1, Math.max(0, boxesData[i * 4 + 1] * yRatio));
+        const x2 = Math.min(1, Math.max(0, boxesData[i * 4 + 2] * xRatio));
+        const y2 = Math.min(1, Math.max(0, boxesData[i * 4 + 3] * yRatio));
+        const cx = (x1 + x2) / 2;
+        const area = Math.max(0, (x2 - x1) * (y2 - y1));
+        detections.push({ label, score: scoresData[i], cx, area });
       }
     }
-    return result;
+    return { labels: result, detections };
   } finally {
     // Defensive cleanup: if any stage threw, the locals above may still hold
     // tensors that the scope wouldn't track.
